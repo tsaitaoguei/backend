@@ -1,0 +1,35 @@
+<div class="chat-container">
+  <div class="chat-header">
+    <h2>報表搜尋助理</h2>
+  </div>
+  <div class="chat-messages" #scrollMe>
+    <div *ngFor="let message of messages" class="message-row" [ngClass]="{'user-row': message.sender === 'user', 'bot-row': message.sender === 'bot'}">
+      <div class="message-bubble" [ngClass]="{'user-bubble': message.sender === 'user', 'bot-bubble': message.sender === 'bot'}">
+        <p [innerHTML]="message.text"></p>
+      </div>
+    </div>
+    <div *ngIf="isLoading" class="message-row bot-row">
+       <div class="message-bubble bot-bubble">
+          <div class="typing-indicator">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+       </div>
+    </div>
+  </div>
+  <div class="chat-input">
+    <input 
+      type="text" 
+      [(ngModel)]="userInput" 
+      (keyup.enter)="sendMessage()"
+      placeholder="請在這裡輸入您的問題..." 
+      [disabled]="isLoading">
+    <button (click)="sendMessage()" [disabled]="isLoading || !userInput.trim()">
+      <svg *ngIf="!isLoading" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="currentColor" class="w-6 h-6">
+        <path d="M3.478 2.405a.75.75 0 00-.926.94l2.432 7.905H13.5a.75.75 0 010 1.5H4.984l-2.432 7.905a.75.75 0 00.926.94 60.519 60.519 0 0018.445-8.986.75.75 0 000-1.218A60.517 60.517 0 003.478 2.405z" />
+      </svg>
+      <div *ngIf="isLoading" class="loader"></div>
+    </button>
+  </div>
+</div>

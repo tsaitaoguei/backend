@@ -1,0 +1,70 @@
+import { Component, ElementRef, ViewChild, AfterViewChecked } from '@angular/core';
+import { HttpClient } from '@angular/common/http';
+import { CommonModule } from '@angular/common';
+import { FormsModule } from '@angular/forms';
+
+// 定義訊息的介面
+interface Message {
+  text: string;
+  sender: 'user' | 'bot';
+}
+
+@Component({
+  selector: 'app-chatbox',
+  standalone: true,
+  imports: [CommonModule, FormsModule],
+  templateUrl: './chatbox.component.html',
+  styleUrls: ['./chatbox.component.css']
+})
+export class ChatboxComponent implements AfterViewChecked {
+  @ViewChild('scrollMe') private myScrollContainer!: ElementRef;
+
+  messages: Message[] = [];
+  userInput: string = '';
+  isLoading: boolean = false;
+  // 您的 Django API 端點 URL
+  private apiUrl = '/api/chatbot/ask/'; 
+
+  constructor(private http: HttpClient) {
+    // 初始歡迎訊息
+    this.messages.push({ text: '你好！我是您的報表搜尋助理，請問有什麼可以協助您的嗎？', sender: 'bot' });
+  }
+
+  ngAfterViewChecked() {
+    this.scrollToBottom();
+  }
+
+  sendMessage(): void {
+    const question = this.userInput.trim();
+    if (!question || this.isLoading) {
+      return;
+    }
+
+    // 1. 將使用者的訊息加入對話窗
+    this.messages.push({ text: question, sender: 'user' });
+    this.userInput = '';
+    this.isLoading = true;
+
+    // 2. 呼叫後端 API
+    this.http.post<{ answer: string }>(this.apiUrl, { question: question })
+      .subscribe({
+        next: (response) => {
+          // 3. 成功時，將機器人的回覆加入對話窗
+          this.messages.push({ text: response.answer, sender: 'bot' });
+          this.isLoading = false;
+        },
+        error: (error) => {
+          // 4. 失敗時，顯示錯誤訊息
+          console.error('API Error:', error);
+          this.messages.push({ text: '抱歉，連線時發生錯誤，請稍後再試。', sender: 'bot' });
+          this.isLoading = false;
+        }
+      });
+  }
+
+  private scrollToBottom(): void {
+    try {
+      this.myScrollContainer.nativeElement.scrollTop = this.myScrollContainer.nativeElement.scrollHeight;
+    } catch(err) { }
+  }
+}
