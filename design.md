@@ -1,4 +1,3 @@
-
 # MTB OPS AI 聊天系統設計文檔
 
 ## 需求分析
@@ -21,7 +20,7 @@
 ---
 
 ## 前端架構設計 (Angular)
-### Angular 組件架構
+### 組件架構
 ```
 ChatWidget (浮動聊天框根組件)
 ├── ChatToggle (開關按鈕)
@@ -46,17 +45,19 @@ ChatWidget (浮動聊天框根組件)
     ├── 斷線重連
     └── 錯誤處理
 ```
+
 ### 核心服務
-```
-typescript
+```typescript
 // ChatService - WebSocket 通信
 // SessionService - 會話管理  
 // MessageService - 消息處理
 // StorageService - 本地存儲
 ```
+
 ---
-## 後端需求規劃
-### Django 架構
+
+## 後端架構設計 (Django)
+### 整體架構
 ```
 Backend Architecture
 ├── Django Channels (WebSocket 支持)
@@ -79,4 +80,339 @@ Backend Architecture
 └── Background Tasks (異步任務)
     ├── Message Processing (消息處理)
     └── Session Cleanup (會話清理)
+```
+
+### 核心組件
+```python
+# WebSocket Consumer
+class ChatConsumer(AsyncWebsocketConsumer)
+
+# LangChain 整合
+class MicronCustomLLM(LLM)
+class LangChainChatService
+
+# 數據模型
+class ChatSession(models.Model)
+class ChatMessage(models.Model)
+```
+
+---
+
+## 數據庫設計 (MSSQL)
+### 表結構
+```sql
+-- 聊天會話表
+CREATE TABLE chat_sessions (
+    session_id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+    user_id INT NULL,
+    created_at DATETIME2 DEFAULT GETDATE(),
+    updated_at DATETIME2 DEFAULT GETDATE(),
+    is_active BIT DEFAULT 1,
+    session_title NVARCHAR(255) NULL,
+    FOREIGN KEY (user_id) REFERENCES auth_user(id)
+);
+
+-- 聊天消息表  
+CREATE TABLE chat_messages (
+    message_id UNIQUEIDENTIFIER PRIMARY KEY DEFAULT NEWID(),
+    session_id UNIQUEIDENTIFIER NOT NULL,
+    message_type NVARCHAR(10) NOT NULL, -- 'user', 'ai', 'system'
+    content NTEXT NOT NULL,
+    metadata NVARCHAR(MAX) NULL, -- JSON 格式
+    created_at DATETIME2 DEFAULT GETDATE(),
+    FOREIGN KEY (session_id) REFERENCES chat_sessions(session_id)
+);
+
+-- 索引優化
+CREATE INDEX IX_chat_messages_session_created ON chat_messages(session_id, created_at);
+CREATE INDEX IX_chat_sessions_user_active ON chat_sessions(user_id, is_active);
+```
+
+---
+
+## WebSocket API 設計
+### 連接端點
+```
+ws://localhost:8000/ws/chat/{session_id}/
+```
+
+### 消息格式規範
+```json
+// 客戶端 → 服務器 (用戶消息)
+{
+  "type": "user_message",
+  "session_id": "uuid-string",
+  "message": "用戶輸入的內容",
+  "timestamp": "2024-01-01T12:00:00Z"
+}
+
+// 服務器 → 客戶端 (AI 串流回應)
+{
+  "type": "ai_chunk",
+  "session_id": "uuid-string",
+  "content": "AI回應的片段",
+  "chunk_index": 1,
+  "is_complete": false
+}
+
+// 服務器 → 客戶端 (回應完成)
+{
+  "type": "ai_complete",
+  "session_id": "uuid-string",
+  "message_id": "uuid-string",
+  "full_response": "完整的AI回應",
+  "token_count": 150
+}
+
+// 錯誤處理
+{
+  "type": "error",
+  "error_code": "PROCESSING_ERROR",
+  "message": "處理消息時發生錯誤",
+  "details": "具體錯誤信息"
+}
+
+// 系統消息
+{
+  "type": "system",
+  "message": "連接已建立",
+  "session_info": {
+    "session_id": "uuid-string",
+    "created_at": "2024-01-01T12:00:00Z"
+  }
+}
+```
+
+---
+
+## REST API 設計 (輔助功能)
+### 核心端點
+```
+POST /api/chat/session/create/     # 創建新會話
+GET  /api/chat/session/{id}/       # 獲取會話信息
+GET  /api/chat/session/{id}/history/ # 獲取對話歷史
+PUT  /api/chat/session/{id}/       # 更新會話 (如標題)
+DELETE /api/chat/session/{id}/     # 刪除會話
+GET  /api/chat/sessions/           # 獲取用戶所有會話
+```
+
+### 響應格式
+```json
+// 創建會話響應
+{
+  "session_id": "uuid-string",
+  "created_at": "2024-01-01T12:00:00Z",
+  "websocket_url": "ws://localhost:8000/ws/chat/{session_id}/"
+}
+
+// 歷史記錄響應
+{
+  "session_id": "uuid-string",
+  "messages": [
+    {
+      "message_id": "uuid-string",
+      "type": "user",
+      "content": "用戶消息",
+      "created_at": "2024-01-01T12:00:00Z"
+    },
+    {
+      "message_id": "uuid-string", 
+      "type": "ai",
+      "content": "AI回應",
+      "created_at": "2024-01-01T12:00:01Z"
+    }
+  ],
+  "total_count": 2
+}
+```
+
+---
+
+## 數據流程設計
+### 完整對話流程
+```
+1. 用戶打開聊天框
+   ↓
+2. 前端調用 POST /api/chat/session/create/ 創建會話
+   ↓
+3. 前端建立 WebSocket 連接 ws://localhost:8000/ws/chat/{session_id}/
+   ↓
+4. 用戶輸入消息 → 通過 WebSocket 發送
+   ↓
+5. Django Consumer 接收消息 → 調用 LangChainChatService
+   ↓
+6. LangChain 處理 → 調用 MicronLLMService → 生成回應
+   ↓
+7. AI 回應分塊 → 通過 WebSocket 串流發送
+   ↓
+8. 前端接收串流 → 逐字顯示 → 保存到本地
+   ↓
+9. 對話完成 → 消息保存到 MSSQL 數據庫
+```
+
+### 錯誤處理流程
+```
+WebSocket 斷線 → 自動重連 (最多3次)
+API 調用失敗 → 顯示錯誤提示 + 重試按鈕
+AI 處理超時 → 超時提示 + 取消按鈕
+數據庫錯誤 → 降級到內存存儲 + 警告提示
+```
+
+---
+
+## 技術整合點
+### LangChain + MicronLLMService
+```python
+class MicronCustomLLM(LLM):
+    """自定義 LLM 包裝 MicronLLMService"""
+    
+    def _call(self, prompt: str, **kwargs) -> str:
+        # 調用現有的 MicronLLMService
+        return self.micron_service.generate_ai_response(...)
+    
+    async def _acall(self, prompt: str, **kwargs) -> str:
+        # 異步版本，支持串流
+        pass
+
+class LangChainChatService:
+    """聊天服務主類"""
+    
+    def __init__(self, session_id: str):
+        self.llm = MicronCustomLLM()
+        self.memory = ConversationBufferWindowMemory(k=10)
+    
+    async def stream_response(self, message: str):
+        """串流處理用戶消息"""
+        # 實現串流邏輯
+        pass
+```
+
+### Django Channels 整合
+```python
+# settings.py
+CHANNEL_LAYERS = {
+    'default': {
+        'BACKEND': 'channels_redis.core.RedisChannelLayer',
+        'CONFIG': {
+            "hosts": [('127.0.0.1', 6379)],
+        },
+    },
+}
+
+# routing.py
+websocket_urlpatterns = [
+    re_path(r'ws/chat/(?P<session_id>[^/]+)/$', ChatConsumer.as_asgi()),
+]
+```
+
+---
+
+## 實現階段規劃
+### Phase 1: 核心功能 (2-3 週)
+- ✅ Django Channels 環境設置
+- ✅ MSSQL 數據庫模型設計
+- ✅ WebSocket Consumer 基礎實現
+- ✅ LangChain + MicronLLMService 整合
+- ⏳ Angular 聊天組件開發
+- ⏳ WebSocket 前後端聯調
+- ⏳ 基礎串流回應實現
+
+### Phase 2: 用戶體驗優化 (1-2 週)
+- 🔄 打字效果和動畫優化
+- 🔄 斷線重連機制
+- 🔄 錯誤處理和用戶提示
+- 🔄 會話管理界面
+- 🔄 響應式設計適配
+
+### Phase 3: 高級功能 (2-3 週)
+- 🔄 數據庫查詢能力 (SQL Agent)
+- 🔄 多會話管理
+- 🔄 消息搜索功能
+- 🔄 用戶偏好設置
+- 🔄 性能優化和監控
+
+### Phase 4: 擴展功能 (未來)
+- 🔄 多模態支持 (圖片、文件)
+- 🔄 語音輸入/輸出
+- 🔄 聊天記錄導出
+- 🔄 AI 助手個性化
+
+---
+
+## UI/UX 設計要點
+### 浮動聊天框特性
+- **位置**：右下角固定，距離邊緣 20px
+- **尺寸**：最小化時 60x60px，展開時 400x600px
+- **狀態**：最小化 / 展開 / 隱藏
+- **動畫**：300ms 平滑過渡效果
+- **層級**：z-index 9999，始終在最上層
+- **響應式**：手機端全屏顯示
+
+### 聊天體驗設計
+- **打字效果**：每個字符間隔 30-50ms
+- **狀態指示**：
+  - 連接中：脈衝動畫
+  - AI 思考中：三點跳動動畫
+  - 錯誤狀態：紅色邊框提示
+- **消息氣泡**：
+  - 用戶消息：右對齊，藍色背景
+  - AI 消息：左對齊，灰色背景
+  - 系統消息：居中，淺色背景
+- **交互反饋**：
+  - 發送按鈕：發送中禁用
+  - 輸入框：字數統計和限制
+  - 滾動：自動滾動到最新消息
+
+### 錯誤處理設計
+- **網絡錯誤**：顯示重連按鈕
+- **API 錯誤**：顯示具體錯誤信息
+- **超時錯誤**：顯示取消和重試選項
+- **降級體驗**：離線模式提示
+
+---
+
+## 性能和安全考慮
+### 性能優化
+- **前端**：虛擬滾動、消息分頁加載
+- **後端**：連接池、消息隊列、緩存策略
+- **數據庫**：索引優化、分區表設計
+- **網絡**：消息壓縮、斷線重連優化
+
+### 安全措施
+- **認證**：JWT Token 驗證
+- **授權**：會話所有權驗證
+- **輸入驗證**：消息長度和內容過濾
+- **速率限制**：防止消息轟炸
+- **數據加密**：敏感信息加密存儲
+
+---
+
+## 監控和維護
+### 關鍵指標
+- WebSocket 連接數和穩定性
+- 消息處理延遲和成功率
+- AI 服務調用次數和響應時間
+- 數據庫查詢性能
+- 用戶活躍度和滿意度
+
+### 日誌記錄
+- 用戶操作日誌
+- 系統錯誤日誌
+- 性能監控日誌
+- AI 服務調用日誌
+
+---
+
+## 部署架構
+### 開發環境
+- Django Development Server + Channels
+- Angular Development Server
+- Local MSSQL Server
+
+### 生產環境
+- Django + Gunicorn + Daphne
+- Nginx (反向代理 + 靜態文件)
+- MSSQL Server (高可用配置)
+- Redis (Channel Layer)
+- Docker 容器化部署
 ```
