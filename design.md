@@ -699,31 +699,55 @@ AI 處理超時 → 超時提示 + 取消按鈕
 ---
 
 ## 技術整合點
-### LangChain + MicronLLMService
-```python
-class MicronCustomLLM(LLM):
-    """自定義 LLM 包裝 MicronLLMService"""
-    
-    def _call(self, prompt: str, **kwargs) -> str:
-        # 調用現有的 MicronLLMService
-        return self.micron_service.generate_ai_response(...)
-    
-    async def _acall(self, prompt: str, **kwargs) -> str:
-        # 異步版本，支持串流
-        pass
 
-class LangChainChatService:
-    """聊天服務主類"""
-    
-    def __init__(self, session_id: str):
-        self.llm = MicronCustomLLM()
-        self.memory = ConversationBufferWindowMemory(k=10)
-    
-    async def stream_response(self, message: str):
-        """串流處理用戶消息"""
-        # 實現串流邏輯
-        pass
-```
+### 🔗 LangChain + MicronLLMService 整合
+**核心挑戰**：LangChain LLM 基類的 Pydantic 字段驗證限制
+**解決方案**：
+- 使用私有屬性 `_micron_service` 避免字段驗證衝突
+- 延遲初始化模式，在 `_initialize_service()` 中創建服務實例
+- 實現 `_call()` 和 `_acall()` 方法包裝 MicronLLMService API
+- 智能響應格式處理，支持多種 API 返回格式
+
+### 🔄 Django Channels + 異步數據庫操作
+**核心挑戰**：WebSocket Consumer 異步上下文與 Django ORM 同步操作衝突
+**解決方案**：
+- 使用 `@database_sync_to_async` 裝飾器包裝所有 ORM 操作
+- 分離同步數據庫函數（`_operation_sync()`）和異步業務邏輯
+- 在異步函數中使用 `await` 調用包裝後的同步操作
+- 保持事務安全和性能優化
+
+### 📡 WebSocket + 串流回應整合
+**核心特性**：
+- 異步生成器模式實現即時串流：`async def process_user_message() -> AsyncIterator[dict]`
+- 智能分塊策略：按句子和標點符號分割 AI 回應
+- 消息類型管理：`ai_chunk`, `ai_complete`, `error`, `system`
+- 會話狀態同步：內存 + 數據庫雙重存儲
+
+### 🗄️ 多數據庫配置整合
+**配置要點**：
+- MSSQL 主數據庫：`using('MTBOI45')` 指定數據庫路由
+- Redis Channel Layer：遠程 Redis 服務器配置
+- 連接池管理：避免數據庫連接洩漏
+- 事務處理：確保消息存儲的原子性
+
+### 🔧 錯誤處理和降級策略
+**關鍵機制**：
+- **服務不可用降級**：MicronLLMService 初始化失敗時返回友好提示
+- **數據庫錯誤處理**：異步操作異常時提供錯誤詳情
+- **WebSocket 斷線重連**：前端自動重連機制
+- **API 響應格式容錯**：處理多種可能的響應結構
+
+### 📊 性能優化整合點
+- **內存管理**：ConversationBufferWindowMemory 限制歷史記錄數量
+- **串流控制**：`asyncio.sleep(0.1)` 控制串流速度
+- **數據庫索引**：session_id + created_at 複合索引
+- **連接復用**：Redis 連接池和數據庫連接池
+
+### 🔐 安全和認證整合
+- **WebSocket 認證**：AuthMiddlewareStack 中間件
+- **會話隔離**：session_id 路由參數驗證
+- **輸入驗證**：JSON 格式和消息內容檢查
+- **錯誤信息過濾**：避免洩露敏感系統信息
 
 ### Django Channels 整合
 ```python
