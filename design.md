@@ -137,6 +137,7 @@ cp /opt/redis/data/mtbops-dump.rdb /opt/redis/backup/mtbops-dump_$DATE.rdb
 
 ## 前端架構設計 (Angular)
 ### 組件架構
+```
 ChatWidget (浮動聊天框根組件)
 ├── ChatToggle (開關按鈕)
 │   ├── 最小化狀態顯示
