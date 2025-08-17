@@ -350,6 +350,190 @@ class MicronCustomLLM(LLM):
 - **錯誤處理重要**：服務初始化可能失敗，需要優雅降級
 - **調試信息有用**：添加日誌幫助排查問題
 
+### 問題2: Django Channels 異步上下文錯誤
+#### 問題描述
+```
+Error: You cannot call this from an async context - use a thread or sync_to_async.
+```
+
+#### 根本原因
+Django Channels 的 WebSocket Consumer 運行在**異步上下文**中，但 Django ORM 是**同步設計**的：
+- **異步環境限制**：WebSocket Consumer 繼承自 `AsyncWebsocketConsumer`
+- **ORM 同步特性**：`Model.objects.create()`, `Model.objects.get()` 等都是同步操作
+- **上下文衝突**：在異步函數中直接調用同步 ORM 會被 Django 阻止
+
+#### 錯誤示例
+```python
+# ❌ 這樣會報錯
+class ChatConsumer(AsyncWebsocketConsumer):
+    async def receive(self, text_data):
+        # 在異步上下文中直接調用同步 ORM
+        session = ChatSession.objects.get(session_id=self.session_id)  # 錯誤！
+        message = ChatMessage.objects.create(...)  # 錯誤！
+```
+
+#### 解決方案：使用 database_sync_to_async
+
+##### 核心概念
+`database_sync_to_async` 是 Django Channels 提供的裝飾器，用於：
+- **包裝同步函數**：將同步的數據庫操作包裝成異步函數
+- **線程池執行**：在後台線程池中執行同步操作
+- **保持事務安全**：確保數據庫事務的正確性
+
+##### 正確實現方式
+```python
+# ✅ 正確方案：分離同步和異步操作
+from channels.db import database_sync_to_async
+
+class LangChainChatService:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.llm = MicronCustomLLM()
+        self.memory = ConversationBufferWindowMemory(k=10, return_messages=True)
+    
+    # 步驟1：創建同步版本的數據庫操作
+    @database_sync_to_async
+    def _load_session_history_sync(self):
+        """Load session history - 同步版本"""
+        try:
+            session = ChatSession.objects.using('MTBOI45').get(session_id=self.session_id)
+            messages = session.messages.order_by('created_at')
+            
+            history_data = []
+            for message in messages:
+                history_data.append({
+                    'type': message.message_type,
+                    'content': message.content
+                })
+            return history_data
+        except ChatSession.DoesNotExist:
+            return []
+    
+    @database_sync_to_async
+    def _get_or_create_session_sync(self):
+        """Get or create session - 同步版本"""
+        session, created = ChatSession.objects.using('MTBOI45').get_or_create(
+            session_id=self.session_id,
+            defaults={}
+        )
+        return session
+    
+    @database_sync_to_async
+    def _save_user_message_sync(self, session, message):
+        """Save user message - 同步版本"""
+        user_message = ChatMessage.objects.using('MTBOI45').create(
+            session=session,
+            message_type='user',
+            content=message
+        )
+        return user_message
+    
+    @database_sync_to_async
+    def _save_ai_message_sync(self, session, content, metadata):
+        """Save AI message - 同步版本"""
+        ai_message = ChatMessage.objects.using('MTBOI45').create(
+            session=session,
+            message_type='ai',
+            content=content,
+            metadata=metadata
+        )
+        return ai_message
+    
+    # 步驟2：在異步函數中調用包裝後的同步操作
+    async def _load_session_history(self):
+        """Load session history - 異步包裝器"""
+        history_data = await self._load_session_history_sync()
+        
+        for msg_data in history_data:
+            if msg_data['type'] == 'user':
+                self.memory.chat_memory.add_user_message(msg_data['content'])
+            elif msg_data['type'] == 'ai':
+                self.memory.chat_memory.add_ai_message(msg_data['content'])
+    
+    async def process_user_message(self, message: str, user=None) -> AsyncIterator[dict]:
+        """Process user message - 主要異步函數"""
+        try:
+            # 所有數據庫操作都使用 await 調用異步版本
+            await self._load_session_history()
+            session = await self._get_or_create_session_sync()
+            user_message = await self._save_user_message_sync(session, message)
+            
+            # 其他業務邏輯...
+            
+            ai_message = await self._save_ai_message_sync(session, full_response, metadata)
+            
+        except Exception as e:
+            print(f"Error in process_user_message: {str(e)}")
+```
+
+#### 設計模式總結
+
+##### 1. 分離原則
+```python
+# 同步函數：純數據庫操作，使用 @database_sync_to_async 裝飾
+@database_sync_to_async
+def _database_operation_sync(self, params):
+    return Model.objects.create(...)
+
+# 異步函數：業務邏輯，調用包裝後的同步函數
+async def business_logic_async(self):
+    result = await self._database_operation_sync(params)
+    return result
+```
+
+##### 2. 命名約定
+- **同步函數**：`_operation_name_sync()`
+- **異步包裝器**：`_operation_name()` 或 `operation_name_async()`
+- **主要業務函數**：`process_something()`, `handle_something()`
+
+##### 3. 錯誤處理
+```python
+async def safe_database_operation(self):
+    try:
+        result = await self._database_operation_sync()
+        return result
+    except Exception as e:
+        print(f"Database error: {str(e)}")
+        # 提供降級方案或重新拋出異常
+        raise
+```
+
+#### 為什麼這樣設計？
+1. **性能考慮** - 避免阻塞異步事件循環
+2. **安全考慮** - 保持數據庫事務的完整性
+3. **架構清晰** - 明確分離同步和異步操作
+4. **可維護性** - 每個函數職責單一，易於測試和調試
+
+#### 常見陷阱和注意事項
+```python
+# ❌ 錯誤：忘記使用 await
+async def wrong_way(self):
+    result = self._database_operation_sync()  # 返回 coroutine 對象，不是實際結果
+
+# ✅ 正確：使用 await
+async def correct_way(self):
+    result = await self._database_operation_sync()  # 獲得實際結果
+
+# ❌ 錯誤：在同步函數中混合異步操作
+@database_sync_to_async
+def mixed_operations_wrong(self):
+    # 不要在同步函數中調用異步操作
+    await some_async_function()  # 這會報錯
+
+# ✅ 正確：保持同步函數純粹
+@database_sync_to_async
+def pure_sync_operation(self):
+    # 只做同步的數據庫操作
+    return Model.objects.create(...)
+```
+
+#### 關鍵學習點
+- **理解異步上下文**：WebSocket Consumer 是異步環境，需要特殊處理同步操作
+- **正確使用裝飾器**：`@database_sync_to_async` 是解決方案的核心
+- **分離關注點**：數據庫操作和業務邏輯分開處理
+- **命名規範**：清晰的命名幫助區分同步和異步函數
+- **錯誤處理**：每個異步操作都需要適當的異常處理
+
 ---
 
 ## 數據庫設計 (MSSQL)
