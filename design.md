@@ -16,12 +16,127 @@
 - **數據庫**：MSSQL Server
 - **通信協議**：WebSocket (即時串流)
 - **AI 服務**：MicronLLMService (現有)
+- **消息隊列**：Redis (遠程部署)
+
+---
+
+## Redis 架構設計與配置
+
+### 🏗️ 架構設計
+```
+Web Server (Windows)              Docker Server (RHEL)
+┌─────────────────────┐       ┌──────────────────────────┐
+│  MTB OPS Django     │       │  Redis Container         │
+│  - Django Channels  │       │  - Host: 10.20.176.207   │
+│  - WebSocket        │<─────>│  - Port: 6379            │
+│  - IP: 10.34.172.229│       │  - Password required     │
+└─────────────────────┘       └──────────────────────────┘
+```
+
+### 🐳 RHEL Docker 服務器 Redis 部署
+
+#### 1. Redis 配置文件
+```conf
+# File: /opt/redis/config/redis.conf
+
+# 網絡配置 - 允許遠程連接
+bind 0.0.0.0                   # 監聽所有網絡接口
+port 6379                      # Redis 服務端口
+timeout 300                    # 客戶端閒置5分鐘後斷開
+
+# 安全配置 - 必須設置密碼
+protected-mode yes             # 啟用保護模式
+requirepass XXX                # 設置強密碼
+
+# 持久化配置 - 適合聊天應用
+save 900 1                     # 15分鐘內1個key變化就保存
+save 300 10                    # 5分鐘內10個key變化就保存
+save 60 10000                  # 1分鐘內10000個key變化就保存
+dbfilename mtbops-dump.rdb     # 數據庫備份文件名
+dir /data                      # 數據文件存放目錄
+
+# 日誌配置
+loglevel notice                # 日誌級別：一般信息
+logfile /var/log/redis/redis.log # 日誌文件路徑
+
+# 內存配置 - 根據服務器配置調整
+maxmemory 2gb                  # 最大使用2GB內存
+maxmemory-policy allkeys-lru   # 內存滿時使用LRU淘汰策略
+
+# 網絡優化
+tcp-keepalive 300              # TCP保活時間300秒
+tcp-backlog 511                # TCP監聽隊列大小
+
+# 性能優化
+databases 16                   # 默認數據庫數量
+```
+#### 2. Docker 容器部署
+```
+# 創建目錄結構
+sudo mkdir -p /opt/redis/{config,data,logs}
+
+# 設置權限
+sudo chown -R 999:999 /opt/redis/data
+sudo chown -R 999:999 /opt/redis/logs
+
+# 啟動 Redis 容器
+docker run -d \
+  --name mtbops-redis \
+  -p 6379:6379 \
+  --restart unless-stopped \
+  -v /opt/redis/config/redis.conf:/usr/local/etc/redis/redis.conf \
+  -v /opt/redis/data:/data \
+  -v /opt/redis/logs:/var/log/redis \
+  redis:latest \
+  redis-server /usr/local/etc/redis/redis.conf
+
+# 檢查容器狀態
+docker ps | grep mtbops-redis
+docker logs mtbops-redis
+```
+
+#### 3. 防火牆配置
+```
+# 開放 Redis 端口
+sudo firewall-cmd --permanent --add-port=6379/tcp
+sudo firewall-cmd --reload
+
+# 檢查端口狀態
+sudo firewall-cmd --list-ports
+sudo netstat -tlnp | grep 6379
+```
+### 📊 監控和維護
+#### 1. 性能監控
+```
+# 監控 Redis 性能
+docker exec mtbops-redis redis-cli INFO stats
+docker exec mtbops-redis redis-cli INFO memory
+docker exec mtbops-redis redis-cli INFO clients
+
+# 監控慢查詢
+docker exec mtbops-redis redis-cli SLOWLOG GET 10
+```
+
+#### 2. 備份策略
+```
+# 手動備份
+docker exec mtbops-redis redis-cli BGSAVE
+
+# 定時備份腳本
+#!/bin/bash
+# File: /opt/redis/backup.sh
+DATE=$(date +%Y%m%d_%H%M%S)
+docker exec mtbops-redis redis-cli BGSAVE
+cp /opt/redis/data/mtbops-dump.rdb /opt/redis/backup/mtbops-dump_$DATE.rdb
+
+# 設置 crontab
+# 0 2 * * * /opt/redis/backup.sh
+```
 
 ---
 
 ## 前端架構設計 (Angular)
 ### 組件架構
-```
 ChatWidget (浮動聊天框根組件)
 ├── ChatToggle (開關按鈕)
 │   ├── 最小化狀態顯示
