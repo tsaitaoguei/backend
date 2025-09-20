@@ -1,4 +1,3 @@
-# File: c:\MTB\gitgub\backend\design.md
 # MTB OPS AI 聊天系統設計文檔
 
 ## 需求分析
